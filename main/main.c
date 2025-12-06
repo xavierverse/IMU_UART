@@ -87,8 +87,6 @@ void task1(float *accel, float *gyro) {
         ESP_LOGI(TAG, "Accel XYZ: %.4f %.4f %.4f Gyro XYZ: %.4f %.4f %.4f", accel[0], accel[1], accel[2], gyro[0], gyro[1], gyro[2]);
 
         // esp_task_wdt_reset();
-
-        // ESP_LOG_BUFFER_HEX_LEVEL(TAG, data_rd, sizeof(data_rd), ESP_LOG_INFO);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
