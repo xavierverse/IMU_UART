@@ -42,7 +42,6 @@ esp_err_t icm_init(void) {
     ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle));
 
     uint8_t wake_buf[2] = { PWR_MGMT_ADDR, LOW_NOISE_MODE } ;
-    // uint8_t wake_buf[2] = { 0x4E, 0x01 } ;
 
     // Wake up cmd
     i2c_master_transmit(dev_handle, wake_buf, sizeof(wake_buf), -1);
@@ -58,19 +57,6 @@ esp_err_t read_imu(float *accel, float *gyro) {
     int attempts = 0;
     esp_err_t ret;
 
-    // while (attempts < RETRY_MAX) {
-    //     ret = i2c_master_transmit(dev_handle, &start_reg, 1, pdMS_TO_TICKS(50));
-
-    //     if (ret == ESP_OK) break;
-
-    //     ESP_LOGW(TAG, "I2C transmit failed: %X", ret);
-    //     vTaskDelay(pdMS_TO_TICKS(10));
-    //     attempts++;
-    // }
-
-    // if (ret != ESP_OK) return ret;
-
-    attempts = 0;
     while (attempts < RETRY_MAX) {
         ret = i2c_master_transmit_receive(dev_handle, &start_reg, 1, data_rd, DATA_LEN, 50);
 
@@ -115,7 +101,7 @@ void app_main(void) {
             ESP_LOGE(TAG, "Failed to read IMU");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 
