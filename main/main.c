@@ -5,11 +5,11 @@
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "esp_task_wdt.h"
-// #define I2C_PORT_NUM_0 0
 #define I2C_MASTER_SCL_IO 8
 #define I2C_MASTER_SDA_IO 10
 #define DATA_LEN 12
 #define RETRY_MAX 5
+#define TWDT_TIMEOUT_S 5
 #define ICM_ADDRESS 0x68
 #define START_REG 0x0B
 #define PWR_MGMT_ADDR 0x1F
@@ -19,6 +19,7 @@ static const char* TAG = "ICM42670";
 
 static i2c_master_bus_handle_t bus_handle;
 static i2c_master_dev_handle_t dev_handle;
+static float accel[3], gyro[3];
 
 
 esp_err_t icm_init(void) {
@@ -51,58 +52,70 @@ esp_err_t icm_init(void) {
     return ESP_OK;
 }
 
-esp_err_t read_imu(float *accel, float *gyro) {
+void read_imu(void *arg) {
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+    ESP_ERROR_CHECK(esp_task_wdt_status(NULL));
     uint8_t start_reg = START_REG;
     uint8_t data_rd[DATA_LEN];
     int attempts = 0;
     esp_err_t ret;
 
-    while (attempts < RETRY_MAX) {
-        ret = i2c_master_transmit_receive(dev_handle, &start_reg, 1, data_rd, DATA_LEN, 50);
+    while (1) {
+        esp_task_wdt_reset();
+        attempts = 0;
+        while (attempts < RETRY_MAX) {
+        
+            ret = i2c_master_transmit_receive(dev_handle, &start_reg, 1, data_rd, DATA_LEN, 50);
 
-        if (ret == ESP_OK) break;
+            if (ret == ESP_OK) break;
 
-        ESP_LOGW(TAG, "I2C read failed: %X", ret);
-        vTaskDelay(pdMS_TO_TICKS(10));
-        attempts++;
+            ESP_LOGW(TAG, "I2C read failed: %X", ret);
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(10));
+            attempts++;
+        }
+
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to read IMU");
+        }
+
+        // Read sensor data
+        int16_t accel_x = (int16_t)((data_rd[0] << 8) | data_rd[1]);
+        int16_t accel_y = (int16_t)((data_rd[2] << 8) | data_rd[3]);
+        int16_t accel_z = (int16_t)((data_rd[4] << 8) | data_rd[5]);
+
+        int16_t gyro_x = (int16_t)((data_rd[6] << 8) | data_rd[7]);
+        int16_t gyro_y = (int16_t)((data_rd[8] << 8) | data_rd[9]);
+        int16_t gyro_z = (int16_t)((data_rd[10] << 8) | data_rd[11]);
+
+        // Convert to float based on sensitivity
+        accel[0] = (float)accel_x / 2048.0f;
+        accel[1] = (float)accel_y / 2048.0f;
+        accel[2] = (float)accel_z / 2048.0f;
+
+        gyro[0] = (float)gyro_x / 16.4f;
+        gyro[1] = (float)gyro_y / 16.4f;
+        gyro[2] = (float)gyro_z / 16.4f;
+
+        ESP_LOGI(TAG, "Accel XYZ: %.4f %.4f %.4f Gyro XYZ: %.4f %.4f %.4f", accel[0], accel[1], accel[2], gyro[0], gyro[1], gyro[2]);
+        vTaskDelay(pdMS_TO_TICKS(200));
+    
     }
-
-    if (ret != ESP_OK) return ret;
-
-    // Read sensor data
-    int16_t accel_x = (int16_t)((data_rd[0] << 8) | data_rd[1]);
-    int16_t accel_y = (int16_t)((data_rd[2] << 8) | data_rd[3]);
-    int16_t accel_z = (int16_t)((data_rd[4] << 8) | data_rd[5]);
-
-    int16_t gyro_x = (int16_t)((data_rd[6] << 8) | data_rd[7]);
-    int16_t gyro_y = (int16_t)((data_rd[8] << 8) | data_rd[9]);
-    int16_t gyro_z = (int16_t)((data_rd[10] << 8) | data_rd[11]);
-
-    // Convert to float based on sensitivity
-    accel[0] = (float)accel_x / 2048.0f;
-    accel[1] = (float)accel_y / 2048.0f;
-    accel[2] = (float)accel_z / 2048.0f;
-
-    gyro[0] = (float)gyro_x / 16.4f;
-    gyro[1] = (float)gyro_y / 16.4f;
-    gyro[2] = (float)gyro_z / 16.4f;
-
-    return ESP_OK;
 }
 
 void app_main(void) {
     icm_init();
+    #if !CONFIG_ESP_TASK_WDT_INIT
+    esp_task_wdt_config_t twdt_config = {
+        .timeout_ms = TWDT_TIMEOUT_S * 1000,
+        .idle_core_mask = (1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1, // Watch idle tasks on all cores
+        .trigger_panic = true, // Trigger a panic on watchdog timeout
+    };
+    ESP_ERROR_CHECK(esp_task_wdt_init(&twdt_config));
+    ESP_LOGI(TAG, "TWDT initialized with timeout of %d seconds.", TWDT_TIMEOUT_S);
+    #endif // CONFIG_ESP_TASK_WDT_INIT
 
-    float accel[3], gyro[3];
-    while (1) {
-        if (read_imu(accel, gyro) == ESP_OK) {
-            ESP_LOGI(TAG, "Accel XYZ: %.4f %.4f %.4f Gyro XYZ: %.4f %.4f %.4f", accel[0], accel[1], accel[2], gyro[0], gyro[1], gyro[2]);
-        } else {
-            ESP_LOGE(TAG, "Failed to read IMU");
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(200));
-    }
+    xTaskCreate(read_imu, "read_imu", 4096, NULL, 5, NULL);
 }
 
 void calculate_sensitivity(uint8_t gyro_fs_sel, uint8_t accel_fs_sel) {
