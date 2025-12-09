@@ -1,5 +1,8 @@
 #include <stdio.h>
+#include <string.h>
 #include "driver/i2c_master.h"
+#include "driver/uart.h"
+#include "driver/gpio.h"
 #include "esp_log_buffer.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -10,6 +13,14 @@
 #define DATA_LEN 12
 #define RETRY_MAX 5
 #define TWDT_TIMEOUT_S 5
+#define UART_BAUD_RATE 115200
+#define UART_PORT_NUM UART_NUM_0
+#define BUF_SIZE (1024)
+#define TXD  GPIO_NUM_21
+#define RXD GPIO_NUM_20
+#define RTS
+#define CTS
+
 #define ICM_ADDRESS 0x68
 #define START_REG 0x0B
 #define PWR_MGMT_ADDR 0x1F
@@ -52,6 +63,26 @@ esp_err_t icm_init(void) {
     return ESP_OK;
 }
 
+void uart_init(void) {
+    uart_config_t uart_config = {
+        .baud_rate = UART_BAUD_RATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    int intr_alloc_flags = 0;
+    ESP_ERROR_CHECK(uart_param_config(UART_PORT_NUM, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(UART_PORT_NUM, TXD, RXD, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, intr_alloc_flags));
+}
+
+void send_uart(float *accel, float *gyro) {
+    uart_write_bytes(UART_PORT_NUM, )
+}
+
+
 void read_imu(void *arg) {
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     ESP_ERROR_CHECK(esp_task_wdt_status(NULL));
@@ -66,7 +97,6 @@ void read_imu(void *arg) {
         while (attempts < RETRY_MAX) {
         
             ret = i2c_master_transmit_receive(dev_handle, &start_reg, 1, data_rd, DATA_LEN, 50);
-
             if (ret == ESP_OK) break;
 
             ESP_LOGW(TAG, "I2C read failed: %X", ret);
@@ -105,6 +135,7 @@ void read_imu(void *arg) {
 
 void app_main(void) {
     icm_init();
+    uart_init();
     #if !CONFIG_ESP_TASK_WDT_INIT
     esp_task_wdt_config_t twdt_config = {
         .timeout_ms = TWDT_TIMEOUT_S * 1000,
