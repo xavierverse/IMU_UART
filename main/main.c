@@ -6,6 +6,7 @@
 #include "esp_log_buffer.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "esp_task_wdt.h"
 #define I2C_MASTER_SCL_IO 8
@@ -18,8 +19,7 @@
 #define BUF_SIZE (1024)
 #define TXD  GPIO_NUM_21
 #define RXD GPIO_NUM_20
-#define RTS
-#define CTS
+#define TIMEOUT_US 200000
 
 #define ICM_ADDRESS 0x68
 #define START_REG 0x0B
@@ -30,7 +30,9 @@ static const char* TAG = "ICM42670";
 
 static i2c_master_bus_handle_t bus_handle;
 static i2c_master_dev_handle_t dev_handle;
-static float accel[3], gyro[3];
+static uint8_t packet[25];
+static uint8_t data_rd[DATA_LEN];
+static uint8_t start_reg = START_REG;
 
 
 esp_err_t icm_init(void) {
@@ -48,7 +50,7 @@ esp_err_t icm_init(void) {
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = ICM_ADDRESS,
-        .scl_speed_hz = 100000,
+        .scl_speed_hz = 400000,
     };
 
     ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle));
@@ -78,64 +80,114 @@ void uart_init(void) {
     ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, intr_alloc_flags));
 }
 
-void send_uart(float *accel, float *gyro) {
-    uart_write_bytes(UART_PORT_NUM, )
+uint16_t crc16_ccitt(const uint8_t *data, size_t length)
+{
+    uint16_t crc = 0xFFFF;
+
+    for (size_t i = 0; i < length; i++) {
+        crc ^= ((uint16_t)data[i] << 8);
+
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            if (crc & 0x8000) {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+
+    return crc;
+}
+
+
+void send_uart(uint8_t *buf) {
+    packet[0] = 0xAA;
+    packet[1] = 0x55;
+
+
+    int64_t time_since_boot = esp_timer_get_time();
+    // ESP_LOGI(TAG, "Periodic timer called, time since boot: %lld us", time_since_boot);
+    packet[2] = time_since_boot & 0xFF;
+    packet[3] = (time_since_boot >> 8) & 0xFF;
+    packet[4] = (time_since_boot >> 16) & 0xFF;
+    packet[5] = (time_since_boot >> 24) & 0xFF;
+    packet[6] = (time_since_boot >> 32) & 0xFF;
+    packet[7] = (time_since_boot >> 40) & 0xFF;
+    packet[8] = (time_since_boot >> 48) & 0xFF;
+    packet[9] = (time_since_boot >> 56) & 0xFF;
+
+    // uint64_t timestamp = ((uint64_t)packet[2])       |
+    // ((uint64_t)packet[3] << 8)  |
+    // ((uint64_t)packet[4] << 16) |
+    // ((uint64_t)packet[5] << 24) |
+    // ((uint64_t)packet[6] << 32) |
+    // ((uint64_t)packet[7] << 40) |
+    // ((uint64_t)packet[8] << 48) |
+    // ((uint64_t)packet[9] << 56);
+    // ESP_LOGI(TAG, "Timestamp: %llu us", timestamp);
+
+    // Sensor data
+    memcpy(&packet[10], buf, 12);
+
+    int16_t accel_x = (int16_t)((packet[10] << 8) | packet[11]);
+    // int16_t accel_y = (int16_t)((packet[12] << 8) | packet[13]);
+    // int16_t accel_z = (int16_t)((packet[14] << 8) | packet[15]);
+    ESP_LOGI(TAG, "Accel XYZ: %d", accel_x);
+
+
+    uint16_t crc = crc16_ccitt(packet, 22);
+    packet[22] = crc & 0xFF;
+    packet[23] = (crc >> 8) & 0xFF;
+
+    packet[24] = 0x00;
+
+    uart_write_bytes(UART_PORT_NUM, packet, sizeof(packet));
+}
+
+void periodic_timer_callback(void* arg)
+{
+    uint8_t data_rd[12];
+    int ret = i2c_master_transmit_receive(dev_handle, &start_reg, 1, data_rd, 12, 50);
+    if (ret == ESP_OK) {
+        send_uart(data_rd);
+    } else {
+        ESP_LOGW(TAG, "I2C read failed: %d", ret);
+    }
 }
 
 
 void read_imu(void *arg) {
-    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
-    ESP_ERROR_CHECK(esp_task_wdt_status(NULL));
-    uint8_t start_reg = START_REG;
-    uint8_t data_rd[DATA_LEN];
-    int attempts = 0;
-    esp_err_t ret;
+    // ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+    // ESP_ERROR_CHECK(esp_task_wdt_status(NULL));
+    // uint8_t start_reg = START_REG;
+    // int attempts = 0;
+    // esp_err_t ret;
 
-    while (1) {
-        esp_task_wdt_reset();
-        attempts = 0;
-        while (attempts < RETRY_MAX) {
+    // while (1) {
+    //     esp_task_wdt_reset();
+    //     attempts = 0;
+    //     while (attempts < RETRY_MAX) {
         
-            ret = i2c_master_transmit_receive(dev_handle, &start_reg, 1, data_rd, DATA_LEN, 50);
-            if (ret == ESP_OK) break;
+    //         ret = i2c_master_transmit_receive(dev_handle, &start_reg, 1, data_rd, DATA_LEN, 50);
+    //         if (ret == ESP_OK) break;
 
-            ESP_LOGW(TAG, "I2C read failed: %X", ret);
-            esp_task_wdt_reset();
-            vTaskDelay(pdMS_TO_TICKS(10));
-            attempts++;
-        }
+    //         ESP_LOGW(TAG, "I2C read failed: %X", ret);
+    //         esp_task_wdt_reset();
+    //         vTaskDelay(pdMS_TO_TICKS(10));
+    //         attempts++;
+    //     }
 
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to read IMU");
-        }
+    //     if (ret != ESP_OK) {
+    //         ESP_LOGE(TAG, "Failed to read IMU");
+    //     }
 
-        // Read sensor data
-        int16_t accel_x = (int16_t)((data_rd[0] << 8) | data_rd[1]);
-        int16_t accel_y = (int16_t)((data_rd[2] << 8) | data_rd[3]);
-        int16_t accel_z = (int16_t)((data_rd[4] << 8) | data_rd[5]);
-
-        int16_t gyro_x = (int16_t)((data_rd[6] << 8) | data_rd[7]);
-        int16_t gyro_y = (int16_t)((data_rd[8] << 8) | data_rd[9]);
-        int16_t gyro_z = (int16_t)((data_rd[10] << 8) | data_rd[11]);
-
-        // Convert to float based on sensitivity
-        accel[0] = (float)accel_x / 2048.0f;
-        accel[1] = (float)accel_y / 2048.0f;
-        accel[2] = (float)accel_z / 2048.0f;
-
-        gyro[0] = (float)gyro_x / 16.4f;
-        gyro[1] = (float)gyro_y / 16.4f;
-        gyro[2] = (float)gyro_z / 16.4f;
-
-        ESP_LOGI(TAG, "Accel XYZ: %.4f %.4f %.4f Gyro XYZ: %.4f %.4f %.4f", accel[0], accel[1], accel[2], gyro[0], gyro[1], gyro[2]);
-        vTaskDelay(pdMS_TO_TICKS(200));
+    //     send_uart(data_rd);
+    //     vTaskDelay(pdMS_TO_TICKS(100));
     
-    }
+    // }
 }
 
-void app_main(void) {
-    icm_init();
-    uart_init();
+void watchdog_init(void) {
     #if !CONFIG_ESP_TASK_WDT_INIT
     esp_task_wdt_config_t twdt_config = {
         .timeout_ms = TWDT_TIMEOUT_S * 1000,
@@ -145,8 +197,28 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_task_wdt_init(&twdt_config));
     ESP_LOGI(TAG, "TWDT initialized with timeout of %d seconds.", TWDT_TIMEOUT_S);
     #endif // CONFIG_ESP_TASK_WDT_INIT
+}
+void timer_init(void) {
+    const esp_timer_create_args_t periodic_timer_args = {
+            .callback = &periodic_timer_callback,
+            .name = "periodic"
+    };
+    esp_timer_handle_t periodic_timer;
+    ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &periodic_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, TIMEOUT_US));
+    ESP_LOGI(TAG, "Started timer, time since boot: %lld us", esp_timer_get_time());
+}
 
-    xTaskCreate(read_imu, "read_imu", 4096, NULL, 5, NULL);
+void app_main(void) {
+    icm_init();
+    uart_init();
+    watchdog_init();
+    timer_init();
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    // xTaskCreate(read_imu, "read_imu", 4096, NULL, 5, NULL);
 }
 
 void calculate_sensitivity(uint8_t gyro_fs_sel, uint8_t accel_fs_sel) {
